@@ -7,7 +7,7 @@ on:
 
 env:
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
 jobs:
   run:
@@ -26,10 +26,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run strategy pipeline
-        run: python scripts/main.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: python scripts/main.py
 
       - name: Commit and push strategy_history.json
         run: |
