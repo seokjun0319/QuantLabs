@@ -1,0 +1,10 @@
+# QuantLabs - Data-Driven Wealth
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.18.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+pyupbit>=1.0.0
+yfinance>=0.2.0
+google-generativeai>=0.8.0

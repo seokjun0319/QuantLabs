@@ -1,0 +1,28 @@
+---
+description: QuantLabs 자동화 코딩 모드 — PM 지시 자동 반영 및 완료 보고
+globs: quantlabs_instruction.md,**/QuantLabs/**/*
+alwaysApply: true
+---
+
+# QuantLabs 자동화 코딩 모드 (절대 준수)
+
+## 1. 상시 감시 (무한 루프 프로토콜)
+- QuantLabs 프로젝트에서 **세션이 시작되거나** 작업할 때마다 **가장 먼저** 다음을 수행할 것:
+  1. **`.cursor/quantlabs_pending_check.txt`** 파일 존재 여부 확인. 있으면 = watcher가 "신규 지시 감지"한 상태 → 즉시 2번으로.
+  2. **`quantlabs_instruction.md`** 리로드 후 **"신규/수정 지시 (PM 입력란)"** 및 마지막 **`[Cursor 완료 보고]`** 이후 추가된 내용 확인.
+- 사용자가 "지시 확인해", "instruction 확인", "quantlabs_instruction 봐줘" 등으로 요청해도 동일하게 즉시 파일 리로드 및 지시 확인.
+- (5분마다 체크는 `scripts/watch_instruction.py`를 터미널에서 실행해 두면, 새 지시 시 트리거 파일이 생성되고 Cursor를 열거나 세션을 열 때 자동 처리됨.)
+
+## 2. 자동 실행 (젬민이 지시 무조건 승인)
+- 젬민이(PM)가 `quantlabs_instruction.md`를 통해 요청하는 **모든 파일 수정**은 **무조건 승인하고 즉시 실행**할 것. 별도 확인 없이 반영.
+- **신규/수정 지시 (PM 입력란)** 또는 **현재 유효한 지시 사항**에 새로운 기획·수정 지시가 있으면 즉시 프로젝트 코드에 반영할 것.
+
+## 3. 진행 보고 및 슬랙 보고 (필수)
+- 지시 반영 작업이 **완료되면**:
+  1. `quantlabs_instruction.md` **파일 하단**에 `[Cursor 완료 보고: YYYY-MM-DD HH:MM]` 및 변경 요약을 추가할 것.
+  2. **슬랙으로 보고**: `modules.slack_notifier.send_completion_report(summary_lines)` 를 호출해 대장님 슬랙에 완료 내용 전송. (.env에 SLACK_WEBHOOK_URL 설정 시)
+  3. **`.cursor/quantlabs_pending_check.txt`** 가 있으면 **삭제**할 것.
+
+## 4. 에러 처리
+- 코드 수정 중 에러가 발생하면 **즉시 중단**하고, 에러 로그를 분석해 원인과 해결책을 파악한 뒤 수정하여 **다시 시도**할 것.
+- 해결 후에도 동일하게 완료 보고를 `quantlabs_instruction.md` 하단에 기록할 것.

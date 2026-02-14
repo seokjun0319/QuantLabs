@@ -1,0 +1,8 @@
+# QuantLabs
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env.local
+*.log
