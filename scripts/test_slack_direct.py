@@ -12,12 +12,16 @@ except ImportError:
     print("requests 미설치. pip install requests 후 재실행.")
     sys.exit(1)
 
-# 테스트용 Webhook (통신 복구 후 .env 에 넣어 두고 modules/slack_notifier 사용)
-WEBHOOK_URL = "https://hooks.slack.com/services/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"
+# .env 의 SLACK_WEBHOOK_URL 사용 (민감정보 절대 하드코딩 금지)
+import os
+WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 MESSAGE = "대장님, 노예가 직접 보고드립니다. 통신 성공!"
 
 
 def main():
+    if not WEBHOOK_URL:
+        print(".env 에 SLACK_WEBHOOK_URL 을 설정한 뒤 다시 실행하세요.")
+        return 1
     payload = {
         "text": MESSAGE,
         "attachments": [{"color": "#36a64f", "title": "QuantLabs 슬랙 통신 테스트"}],
