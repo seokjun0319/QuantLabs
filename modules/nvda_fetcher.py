@@ -41,6 +41,26 @@ def get_nvda_current_price() -> Optional[float]:
         return None
 
 
+def get_nvda_current_price_and_datetime() -> Tuple[Optional[float], Optional[str]]:
+    """NVDA 현재가(USD)와 해당 시세의 날짜·시간(문자열)."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(TICKER)
+        h = t.history(period="5d")
+        if h is not None and not h.empty:
+            price = float(h["Close"].iloc[-1])
+            last_ts = h.index[-1]
+            if hasattr(last_ts, "strftime"):
+                dt_str = last_ts.strftime("%Y-%m-%d %H:%M")
+            else:
+                dt_str = str(last_ts)[:16]
+            return price, dt_str
+        return None, None
+    except Exception as e:
+        send_error_to_slack(e, context="get_nvda_current_price_and_datetime")
+        return None, None
+
+
 def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     """RSI 계산."""
     delta = series.diff()

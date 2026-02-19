@@ -150,29 +150,37 @@ def run_backtest(
     rsi_ob: float = 70,
     rsi_rel: float = 65,
     atr_k: float = 0.5,
-) -> Tuple[float, float, float, pd.Series]:
+) -> Tuple[float, float, float, pd.Series, dict]:
     """
     백테스트: Buy Score > threshold 인 날 다음 시가 매수, 1일 보유 후 다음 시가 매도.
-    Returns: (연간 수익률, MDD, Sharpe, equity curve Series)
+    Returns: (연간 수익률, MDD, Sharpe, equity curve Series, extras)
+    extras: first_buy_date, first_buy_price, mdd_date (날짜/가격/최대낙폭일)
     """
     d = compute_buy_score(df, w_ma, w_rsi, w_atr, rsi_ob, rsi_rel, atr_k)
     d = d.dropna(subset=["buy_score"])
+    extras = {"first_buy_date": None, "first_buy_price": None, "mdd_date": None}
     if len(d) < 20:
-        return 0.0, 1.0, 0.0, pd.Series(dtype=float)
+        return 0.0, 1.0, 0.0, pd.Series(dtype=float), extras
     entries = d["buy_score"] >= score_threshold
     ret = df["close"].pct_change()
     strategy_ret = ret.copy()
     strategy_ret[:] = 0.0
     mask = entries.shift(1).fillna(False).reindex(df.index).fillna(False).astype(bool)
     strategy_ret.loc[mask] = ret.loc[mask]
+    if mask.any():
+        first_idx = mask.idxmax() if hasattr(mask, "idxmax") else d.index[mask].min()
+        extras["first_buy_date"] = first_idx
+        extras["first_buy_price"] = float(df.loc[first_idx, "close"]) if first_idx in df.index else None
     equity = (1 + strategy_ret).cumprod()
     total_ret = equity.iloc[-1] - 1 if len(equity) > 0 else 0.0
     peak = equity.cummax()
     dd = (equity - peak) / peak.replace(0, 1e-10)
     mdd = dd.min()
+    if not dd.empty:
+        extras["mdd_date"] = dd.idxmin()
     excess = strategy_ret - 0.0  # risk-free 0 가정
     sharpe = (excess.mean() / excess.std() * np.sqrt(252)) if excess.std() > 1e-10 else 0.0
-    return total_ret, abs(mdd), sharpe, equity
+    return total_ret, abs(mdd), sharpe, equity, extras
 
 
 def optimize_golden_params(
@@ -202,7 +210,7 @@ def optimize_golden_params(
         rsi_ob_v = 65 + int(rng.integers(0, 10))
         rsi_rel_v = 60 + int(rng.integers(0, 10))
         atr_k_v = 0.3 + float(rng.uniform(0, 0.4))
-        ret, mdd, sharpe, _ = run_backtest(
+        ret, mdd, sharpe, _, _ = run_backtest(
             df,
             score_threshold=thresh,
             w_ma=w_ma, w_rsi=w_rsi, w_atr=w_atr,
@@ -249,7 +257,7 @@ def optimize_golden_params_with_slack(
         rsi_ob_v = 65 + int(rng.integers(0, 10))
         rsi_rel_v = 60 + int(rng.integers(0, 10))
         atr_k_v = 0.3 + float(rng.uniform(0, 0.4))
-        ret, mdd, sharpe, _ = run_backtest(
+        ret, mdd, sharpe, _, _ = run_backtest(
             df,
             score_threshold=thresh,
             w_ma=w_ma, w_rsi=w_rsi, w_atr=w_atr,
@@ -306,6 +314,67 @@ def get_current_buy_score(
     if d.empty or pd.isna(d["buy_score"].iloc[-1]):
         return 50.0
     return float(d["buy_score"].iloc[-1])
+
+
+def get_current_buy_score_breakdown(
+    df: pd.DataFrame,
+    w_ma: float = 0.35,
+    w_rsi: float = 0.35,
+    w_atr: float = 0.30,
+    rsi_ob: float = 70,
+    rsi_rel: float = 65,
+    atr_k: float = 0.5,
+) -> dict:
+    """매수 점수 집계 사유: MA·RSI·ATR 기여도(점) 및 총점."""
+    d = compute_buy_score(df, w_ma, w_rsi, w_atr, rsi_ob, rsi_rel, atr_k)
+    if d.empty or d["buy_score"].iloc[-1] is None or pd.isna(d["buy_score"].iloc[-1]):
+        return {"total": 50.0, "ma_contrib": 0, "rsi_contrib": 0, "atr_contrib": 0}
+    row = d.iloc[-1]
+    ma_contrib = round(w_ma * row["sig_ma"] * 100, 1)
+    rsi_contrib = round(w_rsi * row["sig_rsi"] * 100, 1)
+    atr_contrib = round(w_atr * row["sig_atr"] * 100, 1)
+    return {
+        "total": round(float(row["buy_score"]), 1),
+        "ma_contrib": ma_contrib,
+        "rsi_contrib": rsi_contrib,
+        "atr_contrib": atr_contrib,
+    }
+
+
+def compute_sell_score(
+    df: pd.DataFrame,
+    w_ma: float = 0.35,
+    w_rsi: float = 0.35,
+    w_atr: float = 0.30,
+    rsi_overbought: float = 70,
+    rsi_relief: float = 65,
+    atr_k: float = 0.5,
+) -> pd.DataFrame:
+    """매도 점수(Sell Score) 0~100. MA 역배열·RSI 과매수·ATR 하락 돌파 가중."""
+    d = df.copy()
+    d["sig_ma"] = ma_alignment_signal(d, 5, 20)
+    d["sig_rsi"] = rsi_relief_signal(d, rsi_overbought, rsi_relief)
+    d["sig_atr"] = atr_breakout_signal(d, atr_k)
+    # 매도: 역배열(1-ma), RSI 높을수록(과매수), ATR 하락(1-atr)
+    d["sell_score"] = (w_ma * (1 - d["sig_ma"]) + w_rsi * (d["rsi"] / 100) + w_atr * (1 - d["sig_atr"])) * 100
+    d["sell_score"] = d["sell_score"].clip(0, 100)
+    return d
+
+
+def get_current_sell_score(
+    df: pd.DataFrame,
+    w_ma: float = 0.35,
+    w_rsi: float = 0.35,
+    w_atr: float = 0.30,
+    rsi_ob: float = 70,
+    rsi_rel: float = 65,
+    atr_k: float = 0.5,
+) -> float:
+    """현재 봉 기준 매도 점수 0~100."""
+    d = compute_sell_score(df, w_ma, w_rsi, w_atr, rsi_ob, rsi_rel, atr_k)
+    if d.empty or pd.isna(d["sell_score"].iloc[-1]):
+        return 50.0
+    return float(d["sell_score"].iloc[-1])
 
 
 def save_golden_params(params: dict, metrics: Optional[dict] = None) -> None:

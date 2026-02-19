@@ -1,0 +1,7 @@
+# QuantLabs Streamlit — 포트 8502 사용
+[server]
+port = 8502
+address = "localhost"
+
+[browser]
+gatherUsageStats = false

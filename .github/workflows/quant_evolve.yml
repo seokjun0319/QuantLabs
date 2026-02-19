@@ -1,18 +1,15 @@
-# QuantLabs 자율 최적화 - push 시 즉시 + 5분 주기, strategy_history.json 변경 시에만 커밋/푸시
-name: Quant Auto
+# NVDA 자율 진화 - 목표(연 15%+, MDD 8% 이하, Sharpe 1.5+) 달성 시 best_params 반영 후 푸시
+name: Quant Evolve (NVDA)
 on:
-  push:
-    branches: [ "main" ]
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 env:
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
 
 jobs:
-  run:
+  evolve:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,18 +24,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run strategy pipeline
+      - name: Run NVDA evolution (7:3 split, OOS, stability)
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        run: python scripts/main.py
+        run: python scripts/evolve_nvda.py
 
-      - name: Commit and push strategy_history.json, optimization_log.csv (변경 시에만)
+      - name: Commit and push if best_params, history, or optimization_log changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/strategy_history.json data/optimization_log.csv
+          git add data/best_params.json data/strategy_history.json data/optimization_log.csv
           if ! git diff --staged --quiet; then
-            git commit -m "chore: update strategy_history, optimization_log [auto]"
+            git commit -m "chore: NVDA evolve - best_params / strategy_history / optimization_log [auto]"
             git push origin main
           fi
