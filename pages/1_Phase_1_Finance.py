@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from modules.data_fetcher import get_btc_price, get_btc_ohlc
-from modules.slack_notifier import SLACK_WEBHOOK_URL, send_error_to_slack
+from modules.slack_notifier import get_slack_webhook_url, send_error_to_slack
 from modules.upbit_fetcher import (
     load_btc_daily,
     update_btc_daily_csv,
@@ -433,10 +433,10 @@ def render_btc_tab():
             st.error("현재가 조회 실패. 슬랙으로 에러 전송됨.")
 
     with col_slack:
-        slack_ok = bool(SLACK_WEBHOOK_URL)
+        slack_ok = bool(get_slack_webhook_url())
         st.metric("슬랙 연동", "✅ 설정됨" if slack_ok else "❌ 미설정")
         if not slack_ok:
-            st.caption(".env에 SLACK_WEBHOOK_URL을 설정하세요.")
+            st.caption("Streamlit Cloud: 앱 설정 → Secrets에 SLACK_WEBHOOK_URL 추가. 로컬: .env에 설정.")
 
     # ----- VBS 변동성 돌파 -----
     st.markdown("---")

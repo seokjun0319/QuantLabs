@@ -86,11 +86,23 @@ def get_nvda_rss_news(limit: int = 5) -> list[dict]:
     return out
 
 
+def _get_gemini_api_key() -> str:
+    """Streamlit Cloud: st.secrets['GEMINI_API_KEY'] 우선, 로컬: .env."""
+    try:
+        import streamlit as _st
+        k = _st.secrets.get("GEMINI_API_KEY", "")
+        if k:
+            return (k or "").strip()
+    except Exception:
+        pass
+    return (os.environ.get("GEMINI_API_KEY", "") or "").strip()
+
+
 def _add_korean_via_gemini(news: list[dict]) -> None:
     """news 리스트 각 항목에 title_kr, summary_kr 필드 추가. 실패 시 무시."""
     if not news:
         return
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = _get_gemini_api_key()
     if not api_key:
         return
     try:

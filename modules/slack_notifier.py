@@ -2,22 +2,39 @@
 QuantLabs - Slack 알림 모듈
 에러 발생 시 대장님 슬랙으로 무조건 전송. 멈추면 죽음이다.
 한글 깨짐 방지: 모든 JSON 직렬화는 ensure_ascii=False 필수. 요청 본문 UTF-8.
+Streamlit Cloud: st.secrets["SLACK_WEBHOOK_URL"] 우선, 없으면 .env (로컬/스크립트).
 """
 import json
 import os
-
-# 슬랙 전송 시 한글이 유니코드 이스케이프 되지 않도록 고정
-JSON_DUMPS_KWARGS = {"ensure_ascii": False}
-SLACK_HEADERS = {"Content-Type": "application/json; charset=utf-8"}
 import traceback
 from typing import Optional
 
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+# 슬랙 전송 시 한글이 유니코드 이스케이프 되지 않도록 고정
+JSON_DUMPS_KWARGS = {"ensure_ascii": False}
+SLACK_HEADERS = {"Content-Type": "application/json; charset=utf-8"}
 
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+
+def get_slack_webhook_url() -> str:
+    """Streamlit Cloud: st.secrets["SLACK_WEBHOOK_URL"] 우선, 로컬/스크립트: .env."""
+    try:
+        import streamlit as _st
+        u = _st.secrets.get("SLACK_WEBHOOK_URL", "")
+        if u:
+            return u
+    except Exception:
+        pass
+    return os.getenv("SLACK_WEBHOOK_URL", "")
+
+
+# 로컬/스크립트 실행 시 .env 로드 (Streamlit 앱에서는 st.secrets 사용)
+if "streamlit" not in __import__("sys").modules:
+    load_dotenv()
+
+# 하위 호환: 페이지에서 SLACK_WEBHOOK_URL 참조 시 런타임에 조회 (함수로 대체 권장)
+SLACK_WEBHOOK_URL = ""
 
 
 def send_slack_message(
@@ -29,7 +46,8 @@ def send_slack_message(
     Slack Webhook으로 메시지 전송.
     Returns: 전송 성공 여부
     """
-    if not SLACK_WEBHOOK_URL:
+    url = get_slack_webhook_url()
+    if not url:
         return False
     try:
         payload = {
@@ -42,7 +60,7 @@ def send_slack_message(
         # 한글이 절대로 깨지지 않도록 ensure_ascii=False 필수
         body = json.dumps(payload, ensure_ascii=False)
         resp = requests.post(
-            SLACK_WEBHOOK_URL,
+            url,
             data=body.encode("utf-8"),
             headers=SLACK_HEADERS,
             timeout=10,
