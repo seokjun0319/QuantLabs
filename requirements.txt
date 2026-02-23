@@ -12,3 +12,7 @@ google-generativeai>=0.3.0
 
 # Upbit BTC (Phase 1 비트코인 탭)
 pyupbit>=0.2.20,<=0.2.34
+
+# 아이템 스카우터 (쿠팡 파트너스)
+beautifulsoup4>=4.12.0
+# selenium>=4.15.0  # 쿠팡 차단 시 폴백 (필요 시 주석 해제)
