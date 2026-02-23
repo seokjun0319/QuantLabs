@@ -8,7 +8,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -69,6 +71,8 @@ from modules.hunter_screener import (
     KR_ETF_BY_THEME,
     KR_TICKER_NAMES,
     fetch_tickers_ohlc,
+    fetch_ticker_fundamentals,
+    fetch_treemap_data,
     compute_screener_metrics,
 )
 
@@ -76,16 +80,77 @@ st.set_page_config(page_title="Phase 1 Finance | QuantLabs", page_icon="📈", l
 
 # 종목 발굴기 데이터 1시간 캐싱
 @st.cache_data(ttl=3600)
-def get_cached_hunter_data(tickers: list, days: int = 250):
-    return fetch_tickers_ohlc(tickers, days)
+def get_cached_hunter_data(tickers: tuple, days: int = 250):
+    return fetch_tickers_ohlc(list(tickers), days)
+
+
+@st.cache_data(ttl=3600)
+def get_cached_ticker_info(tickers: tuple):
+    """PER(개별주) / NAV 괴리율(ETF) 펀더멘털 1시간 캐싱."""
+    return fetch_ticker_fundamentals(list(tickers))
+
+
+@st.cache_data(ttl=3600)
+def get_cached_treemap_data(category: str):
+    """트리맵 데이터 4종 1시간 캐싱. category: us_stocks, us_etf, kr_stocks, kr_etf"""
+    if category == "us_stocks":
+        return fetch_treemap_data(US_ATTACKERS_BY_THEME)
+    if category == "us_etf":
+        return fetch_treemap_data(US_ETF_BY_THEME)
+    if category == "kr_stocks":
+        return fetch_treemap_data(KR_ATTACKERS_BY_THEME, ticker_names=KR_TICKER_NAMES)
+    if category == "kr_etf":
+        return fetch_treemap_data(KR_ETF_BY_THEME, kr_etf_format=True)
+    return []
+
+
+def _build_treemap_fig(rows: list, price_fmt: str = "${:,.2f}") -> go.Figure | None:
+    """핀비즈 스타일 트리맵: 시총 크기, 등락률 색상(상승=Green, 하락=Red)."""
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    df = df[df["market_cap"] > 0].copy()
+    if df.empty:
+        return None
+    def _fmt_price(x):
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return "N/A"
+        try:
+            return price_fmt.format(float(x))
+        except (ValueError, TypeError):
+            return "N/A"
+    df["price_str"] = df["price"].apply(_fmt_price)
+    df["per_str"] = df["per"].apply(lambda x: f"{x:.1f}" if x is not None and not (isinstance(x, float) and np.isnan(x)) else "N/A")
+    df["pct_str"] = df["pct_change"].apply(lambda x: f"{x:+.2f}%" if x != 0 else "0.00%")
+    try:
+        fig = px.treemap(
+            df,
+            path=[px.Constant("all"), "theme", "label"],
+            values="market_cap",
+            color="pct_change",
+            color_continuous_scale=["#dc3545", "#ffffff", "#28a745"],
+            color_continuous_midpoint=0,
+            hover_data={"price_str": True, "per_str": True, "pct_str": True},
+        )
+        fig.update_layout(
+            margin=dict(t=20, l=5, r=5, b=5),
+            coloraxis_showscale=False,
+            height=420,
+            showlegend=False,
+        )
+        fig.update_traces(marker_line_width=0.5, marker_line_color="white", textinfo="label")
+        return fig
+    except Exception:
+        return None
+
 
 # 차트 공통: 마우스 드래그로 이동(패닝), 스크롤로 줌
 PLOTLY_CONFIG = {"scrollZoom": True, "displayModeBar": True}
 
 
-def _render_screener_table(data: dict, ticker_names: dict | None = None, price_fmt: str = "${:,.2f}"):
-    """공통: 스크리너 메트릭 테이블 + RSI/Vol 스타일."""
-    rows = compute_screener_metrics(data, ticker_names=ticker_names)
+def _render_screener_table(data: dict, ticker_names: dict | None = None, price_fmt: str = "${:,.2f}", ticker_info: dict | None = None):
+    """공통: 스크리너 메트릭 테이블 + RSI/Vol/Entry Signal/Value Check/Risk Status 스타일."""
+    rows = compute_screener_metrics(data, ticker_names=ticker_names, ticker_info=ticker_info)
     if not rows:
         st.caption("데이터 준비 중입니다.")
         return
@@ -98,73 +163,155 @@ def _render_screener_table(data: dict, ticker_names: dict | None = None, price_f
         ]
     def _vol_style(s):
         return ["font-weight: bold" if v >= 1.5 else "" for v in s]
+    def _entry_signal_style(s):
+        """Entry Signal: Buy the Dip = Green, Value Trap = Orange."""
+        _map = {
+            "Buy the Dip (줍줍 기회)": "background-color: #28a745; color: #fff; font-weight: bold; text-align: center",
+            "Value Trap (진입 보류)": "background-color: #fd7e14; color: #fff; font-weight: bold; text-align: center",
+            "Watch (상승추세 관망)": "text-align: center",
+            "No Entry (하락추세 진입금지)": "text-align: center",
+        }
+        return [_map.get(str(v), "text-align: center") for v in s]
+    def _value_check_style(s):
+        """Value Check: 정상=Green, 주의=Yellow, 위험=Red."""
+        _map = {
+            "정상": "background-color: #28a745; color: #fff; font-weight: bold; text-align: center",
+            "주의": "background-color: #ffc107; color: #000; font-weight: bold; text-align: center",
+            "위험": "background-color: #dc3545; color: #fff; font-weight: bold; text-align: center",
+            "N/A": "text-align: center",
+        }
+        return [_map.get(str(v), "text-align: center") for v in s]
+    def _risk_status_style(s):
+        """Risk Status: Trend Broken, Strong Sell = Red 강조."""
+        _map = {
+            "Trend Broken (무조건 탈출)": "background-color: #8B0000; color: #fff; font-weight: bold; text-align: center",
+            "Strong Sell (적극 익절)": "background-color: #dc3545; color: #fff; font-weight: bold; text-align: center",
+            "Caution (과열 주의)": "text-align: center",
+            "Stable (평온)": "text-align: center",
+        }
+        return [_map.get(str(v), "text-align: center") for v in s]
     styled = df.style.apply(_rsi_style, subset=["RSI (14)"])
     styled = styled.apply(_vol_style, subset=["Vol (전일대비)"])
-    styled = styled.format({
-        "Current Price": price_fmt,
-        "RSI (14)": "{:.1f}",
-        "Vol (전일대비)": "{:.0%}",
-    })
+    styled = styled.apply(_entry_signal_style, subset=["Entry Signal"])
+    if "Value Check" in df.columns:
+        styled = styled.apply(_value_check_style, subset=["Value Check"])
+    styled = styled.apply(_risk_status_style, subset=["Risk Status"])
+    fmt_dict = {"Current Price": price_fmt, "RSI (14)": "{:.1f}", "Vol (전일대비)": "{:.0%}"}
+    styled = styled.format({k: v for k, v in fmt_dict.items() if k in df.columns})
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 def render_hunter_tab():
-    """🔍 종목 발굴(Hunter): 미장(테마 탭 + ETF) / 국장(테마 탭 + ETF), 캐싱 적용."""
+    """🔍 종목 발굴(Hunter): 각 표 옆에 트리맵 배치."""
     st.subheader("🔍 종목 발굴 (Hunter)")
-    st.caption("데이터는 1시간 캐시됩니다. 테마별 탭 전환 · 옆에 ETF 방어군.")
 
-    # ----- 1행: 미장 공격수(테마 탭) | 미장 ETF 방어군 -----
-    st.markdown("### 🇺🇸 미장")
-    col_us_a, col_us_etf = st.columns(2)
+    with st.expander("📌 Entry Signal · Value Check · Risk Status 해석 가이드", expanded=True):
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.markdown("**Entry Signal (진입 신호)**")
+            st.markdown("""
+            | 값 | 의미 |
+            |---|---|
+            | Buy the Dip | RSI<35 & 가격>MA200 + Safe Guard 통과 |
+            | Value Trap | 줍줍 조건 충족하나 PER/괴리율 필터 미달 |
+            | Watch | 상승추세 관망 (가격 > MA200) |
+            | No Entry | 하락추세 진입금지 |
+            **포인트:** Buy the Dip만 적극 매수 후보. Value Trap은 과대평가 우려로 보류.
+            """)
+        with col_b:
+            st.markdown("**Value Check (밸류 체크)**")
+            st.markdown("""
+            | 값 | 개별주 | ETF |
+            |---|---:|---:|
+            | 정상 | PER < 30 | 괴리율 < 0.2% |
+            | 주의 | PER 30~50 | 괴리율 0.2~1% |
+            | 위험 | PER > 50 | 괴리율 > 1% |
+            **포인트:** 정상일 때만 안전 매수. 위험 구간은 추가 검토 필요.
+            """)
+        with col_c:
+            st.markdown("**Risk Status (리스크 관리)**")
+            st.markdown("""
+            | 값 | 의미 |
+            |---|---|
+            | Trend Broken | 가격 < MA200, 손절 검토 |
+            | Strong Sell | RSI > 80, 적극 익절 권장 |
+            | Caution | RSI > 70, 과열 주의 |
+            | Stable | 평온 구간 |
+            **포인트:** 보유종목은 Trend Broken·Strong Sell 시 매도 우선 고려.
+            """)
 
-    with col_us_a:
-        st.markdown("#### 미장 공격수 (테마별)")
+    # ----- 미장 공격수: 트리맵 | 테이블 -----
+    st.markdown("### 🇺🇸 미장 공격수")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        rows = get_cached_treemap_data("us_stocks")
+        fig = _build_treemap_fig(rows, price_fmt="${:,.2f}")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True, key="tm_us_stocks", config={"displayModeBar": False})
+    with c2:
         theme_us = st.tabs(list(US_ATTACKERS_BY_THEME.keys()))
-        for i, (theme_name, tickers) in enumerate(US_ATTACKERS_BY_THEME.items()):
+        for i, (_, tickers) in enumerate(US_ATTACKERS_BY_THEME.items()):
             with theme_us[i]:
                 data = get_cached_hunter_data(tuple(tickers))
-                _render_screener_table(data, price_fmt="${:,.2f}")
-        st.caption("🟢 RSI ≤ 30 과매도 | 🔴 RSI ≥ 70 과매수 | **Vol 150%+** 거래량 급증")
+                ticker_info = get_cached_ticker_info(tuple(tickers))
+                _render_screener_table(data, price_fmt="${:,.2f}", ticker_info=ticker_info)
 
-    with col_us_etf:
-        st.markdown("#### 미장 ETF 방어군 (테마별)")
+    # ----- 미장 ETF: 트리맵 | 테이블 -----
+    st.markdown("### 🇺🇸 미장 ETF")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        rows = get_cached_treemap_data("us_etf")
+        fig = _build_treemap_fig(rows, price_fmt="${:,.2f}")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True, key="tm_us_etf", config={"displayModeBar": False})
+    with c2:
         etf_us_tabs = st.tabs(list(US_ETF_BY_THEME.keys()))
-        for i, (theme_name, tickers) in enumerate(US_ETF_BY_THEME.items()):
+        for i, (_, tickers) in enumerate(US_ETF_BY_THEME.items()):
             with etf_us_tabs[i]:
-                data_etfs = get_cached_hunter_data(tuple(tickers))
-                _render_screener_table(data_etfs, price_fmt="${:,.2f}")
-        st.caption("지수·배당·채권·원자재·섹터 ETF")
+                data = get_cached_hunter_data(tuple(tickers))
+                ticker_info = get_cached_ticker_info(tuple(tickers))
+                _render_screener_table(data, price_fmt="${:,.2f}", ticker_info=ticker_info)
 
     st.markdown("---")
 
-    # ----- 2행: 국장 공격수(테마 탭) | 국장 ETF 방어군 -----
-    st.markdown("### 🇰🇷 국장")
-    col_kr_a, col_kr_etf = st.columns(2)
-
-    with col_kr_a:
-        st.markdown("#### 국장 공격수 (테마별)")
+    # ----- 국장 공격수: 트리맵 | 테이블 -----
+    st.markdown("### 🇰🇷 국장 공격수")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        rows = get_cached_treemap_data("kr_stocks")
+        fig = _build_treemap_fig(rows, price_fmt="{:,.0f}") if rows else None
+        if fig:
+            st.plotly_chart(fig, use_container_width=True, key="tm_kr_stocks", config={"displayModeBar": False})
+    with c2:
         theme_kr = st.tabs(list(KR_ATTACKERS_BY_THEME.keys()))
-        for i, (theme_name, tickers) in enumerate(KR_ATTACKERS_BY_THEME.items()):
+        for i, (_, tickers) in enumerate(KR_ATTACKERS_BY_THEME.items()):
             with theme_kr[i]:
                 data = get_cached_hunter_data(tuple(tickers))
-                _render_screener_table(data, ticker_names=KR_TICKER_NAMES, price_fmt="{:,.0f}")
-        st.caption("국장 종목: 원화 기준 가격")
+                ticker_info = get_cached_ticker_info(tuple(tickers))
+                _render_screener_table(data, ticker_names=KR_TICKER_NAMES, price_fmt="{:,.0f}", ticker_info=ticker_info)
 
-    with col_kr_etf:
-        st.markdown("#### 국장 ETF 방어군 (테마별)")
+    # ----- 국장 ETF: 트리맵 | 테이블 -----
+    st.markdown("### 🇰🇷 국장 ETF")
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        rows = get_cached_treemap_data("kr_etf")
+        fig = _build_treemap_fig(rows, price_fmt="{:,.0f}") if rows else None
+        if fig:
+            st.plotly_chart(fig, use_container_width=True, key="tm_kr_etf", config={"displayModeBar": False})
+    with c2:
         etf_kr_tabs = st.tabs(list(KR_ETF_BY_THEME.keys()))
-        for i, (theme_name, ticker_list) in enumerate(KR_ETF_BY_THEME.items()):
+        for i, (_, ticker_list) in enumerate(KR_ETF_BY_THEME.items()):
             with etf_kr_tabs[i]:
                 kr_etf_tickers = [t[0] for t in ticker_list]
                 kr_etf_names = {t[0]: t[1] for t in ticker_list}
-                data_kr_etf = get_cached_hunter_data(tuple(kr_etf_tickers))
-                _render_screener_table(data_kr_etf, ticker_names=kr_etf_names, price_fmt="{:,.0f}")
-        st.caption("KODEX/TIGER 등 국내 ETF")
+                data = get_cached_hunter_data(tuple(kr_etf_tickers))
+                ticker_info = get_cached_ticker_info(tuple(kr_etf_tickers))
+                _render_screener_table(data, ticker_names=kr_etf_names, price_fmt="{:,.0f}", ticker_info=ticker_info)
 
     with st.expander("📌 추천 신호 요약"):
-        st.markdown("- **Buy the Dip (줍줍 기회)**: RSI < 35 이면서 가격 > 200일선")
-        st.markdown("- **Overbought (과열 조심)**: RSI > 75")
-        st.markdown("- **Hold / Wait**: 그 외")
+        st.markdown("- **Buy the Dip**: RSI < 35 & 가격 > MA200 + Safe Guard")
+        st.markdown("- **Value Trap**: PER/괴리율 필터 미달")
+        st.markdown("- **Value Check**: 정상 / 주의 / 위험")
 
 
 def render_nvda_section():

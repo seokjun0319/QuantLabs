@@ -106,17 +106,29 @@ KR_ETF_BY_THEME = {
         ("114260.KS", "KODEX 골드선물"),
         ("132030.KS", "KODEX 미국달러선물"),
     ],
+    "원자재": [
+        ("114260.KS", "KODEX 골드선물"),
+        ("253280.KS", "KODEX 골드선물(H)"),
+        ("130680.KS", "KODEX WTI원유선물"),
+        ("138910.KS", "KODEX 구리선물(H)"),
+        ("144600.KS", "KODEX 은선물(H)"),
+        ("116480.KS", "KODEX 골드선물인버스"),
+        ("261420.KS", "KODEX WTI원유선물인버스"),
+        ("307520.KS", "KODEX 골드선물2X"),
+        ("319640.KS", "TIGER 골드선물(H)"),
+        ("411060.KS", "ACE KRX금현물"),
+    ],
     "인버스·헤지": [
         ("252670.KS", "KODEX 200선물인버스2X"),
         ("233740.KS", "KODEX 인버스"),
         ("114800.KS", "KODEX 인버스2X"),
-        ("251340.KS", "KODEX 200초단기선물"),
         ("441680.KS", "KODEX 미국나스닥100헤지"),
         ("245340.KS", "KODEX 미국S&P500헤지"),
-        ("305720.KS", "KODEX 200미니선물"),
-        ("278420.KS", "KODEX 200동시가격"),
         ("117460.KS", "KODEX 중국심천ChiNext"),
         ("102960.KS", "KODEX 일본니케이225"),
+        ("266420.KS", "KODEX 미국나스닥100레버리지"),
+        ("251340.KS", "KODEX 200초단기선물"),
+        ("305720.KS", "KODEX 200미니선물"),
     ],
 }
 
@@ -190,6 +202,96 @@ TICKERS_STOCKS = [
 
 DAYS_LOOKBACK = 250  # MA200 및 RSI용
 
+# Entry Signal Safe Guard 설정 (대장님 조정 가능)
+PER_THRESHOLD = 30  # 개별주: PER < 이 값일 때만 Buy the Dip
+NAV_PREMIUM_THRESHOLD_PCT = 0.2  # ETF: 괴리율 < 이 %일 때만 Buy the Dip
+
+# ETF 티커 집합 (Safe Guard 및 필드 표시용)
+ALL_ETF_TICKERS: set[str] = (
+    set(t for ticks in US_ETF_BY_THEME.values() for t in ticks)
+    | set(t for ticks in KR_ETF_BY_THEME.values() for t, _ in ticks)
+)
+
+
+def fetch_ticker_fundamentals(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    티커별 PER(개별주) / NAV 괴리율%(ETF) 수집.
+    Returns: {ticker: {per, nav_premium_pct, is_etf, value_check}}
+    """
+    result: dict[str, dict[str, Any]] = {}
+    try:
+        import yfinance as yf
+        for t in tickers:
+            out: dict[str, Any] = {"per": None, "nav_premium_pct": None, "is_etf": False, "value_check": ""}
+            try:
+                obj = yf.Ticker(t)
+                info = obj.info or {}
+                quote_type = (info.get("quoteType") or "").upper()
+                out["is_etf"] = quote_type == "ETF" or t in ALL_ETF_TICKERS
+
+                if out["is_etf"]:
+                    nav = info.get("navPrice")  # ETF 전용, 없으면 N/A
+                    price = info.get("regularMarketPrice") or info.get("previousClose") or 0
+                    if nav and float(nav) > 0 and price:
+                        price_f = float(price)
+                        nav_f = float(nav)
+                        out["nav_premium_pct"] = round((price_f - nav_f) / nav_f * 100, 2)
+                else:
+                    pe = info.get("trailingPE") or info.get("forwardPE")
+                    if pe is not None:
+                        out["per"] = round(float(pe), 1)
+            except Exception:
+                pass
+            result[t] = out
+    except Exception:
+        pass
+    return result
+
+
+def fetch_treemap_data(
+    theme_map: dict[str, list],
+    ticker_names: dict[str, str] | None = None,
+    kr_etf_format: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    트리맵용 데이터: theme, label, market_cap, pct_change, price, per, rsi
+    kr_etf_format: theme_map 값이 [(ticker, name), ...] 형태일 때 True
+    """
+    rows: list[dict[str, Any]] = []
+    try:
+        import yfinance as yf
+        for theme, tickers in theme_map.items():
+            for item in tickers:
+                ticker = item[0] if kr_etf_format else item
+                display = item[1] if kr_etf_format else (ticker_names.get(ticker, ticker) if ticker_names else ticker)
+                try:
+                    t = yf.Ticker(ticker)
+                    info = t.info or {}
+                    cap = info.get("marketCap") or info.get("enterpriseValue")
+                    price = info.get("regularMarketPrice") or info.get("previousClose") or info.get("currentPrice")
+                    prev = info.get("regularMarketPreviousClose") or info.get("previousClose")
+                    pct = None
+                    if price and prev and float(prev) > 0:
+                        pct = round((float(price) - float(prev)) / float(prev) * 100, 2)
+                    per = info.get("trailingPE") or info.get("forwardPE")
+                    per_val = round(float(per), 1) if per is not None else None
+                    cap_val = float(cap) if cap is not None else 1e9  # 기본값으로 정렬
+                    price_val = float(price) if price else None
+                    rows.append({
+                        "theme": theme,
+                        "label": str(display),
+                        "market_cap": max(cap_val, 1e6),
+                        "pct_change": pct if pct is not None else 0.0,
+                        "price": price_val,
+                        "per": per_val,
+                        "rsi": None,  # RSI는 OHLC 필요, 선택적 보강
+                    })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return rows
+
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
@@ -234,12 +336,15 @@ def fetch_tickers_ohlc(tickers: list[str], days: int = DAYS_LOOKBACK) -> dict[st
 def compute_screener_metrics(
     data: dict[str, pd.DataFrame],
     ticker_names: dict[str, str] | None = None,
+    ticker_info: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     티커별 지표 계산.
     ticker_names: 티커→표시명 (국장 등). 있으면 표에 표시명 사용.
-    Returns list of dicts: ticker, current_price, rsi, ma200, trend, vol_ratio, action.
+    ticker_info: fetch_ticker_fundamentals() 결과. PER/NAV Safe Guard 및 Value Check용.
+    Returns list of dicts: ticker, current_price, rsi, ..., per, nav_premium_pct, entry_signal, value_check, risk_status.
     """
+    ticker_info = ticker_info or {}
     rows = []
     for ticker, df in data.items():
         if df is None or len(df) < 30:
@@ -272,12 +377,57 @@ def compute_screener_metrics(
         if vol_ratio is None:
             vol_ratio = 0.0
 
-        if rsi < 35 and ma200_last and current_price > ma200_last:
-            action = "Buy the Dip (줍줍 기회)"
-        elif rsi > 75:
-            action = "Overbought (과열 조심)"
+        info = ticker_info.get(ticker, {})
+        is_etf = info.get("is_etf", ticker in ALL_ETF_TICKERS)
+        per = info.get("per")
+        nav_premium_pct = info.get("nav_premium_pct")
+
+        # PER / NAV 괴리율 표시값
+        per_display = f"{per:.1f}" if per is not None else "N/A"
+        nav_display = f"{nav_premium_pct:+.2f}%" if nav_premium_pct is not None else "N/A"
+
+        # Value Check: 정상(Green), 주의(Yellow), 위험(Red)
+        if is_etf:
+            if nav_premium_pct is None:
+                value_check = "N/A"
+            elif nav_premium_pct < 0.2:
+                value_check = "정상"
+            elif nav_premium_pct < 1.0:
+                value_check = "주의"
+            else:
+                value_check = "위험"
         else:
-            action = "Hold / Wait"
+            if per is None:
+                value_check = "N/A"
+            elif per < PER_THRESHOLD:
+                value_check = "정상"
+            elif per < 50:
+                value_check = "주의"
+            else:
+                value_check = "위험"
+
+        # Entry Signal (진입 신호) + Safe Guard 필터
+        if rsi < 35 and ma200_last and current_price > ma200_last:
+            # Safe Guard: 개별주 PER < 30, ETF 괴리율 < 0.2%
+            if is_etf:
+                guard_ok = nav_premium_pct is not None and nav_premium_pct < NAV_PREMIUM_THRESHOLD_PCT
+            else:
+                guard_ok = per is not None and per < PER_THRESHOLD
+            entry_signal = "Buy the Dip (줍줍 기회)" if guard_ok else "Value Trap (진입 보류)"
+        elif ma200_last and current_price > ma200_last:
+            entry_signal = "Watch (상승추세 관망)"
+        else:
+            entry_signal = "No Entry (하락추세 진입금지)"
+
+        # Risk Status (리스크 관리): 보유종목 매도 시점·위험도
+        if ma200_last and current_price < ma200_last:
+            risk_status = "Trend Broken (무조건 탈출)"
+        elif rsi > 80:
+            risk_status = "Strong Sell (적극 익절)"
+        elif rsi > 70:
+            risk_status = "Caution (과열 주의)"
+        else:
+            risk_status = "Stable (평온)"
 
         display_ticker = (ticker_names.get(ticker, ticker) if ticker_names else ticker)
         rows.append({
@@ -286,6 +436,10 @@ def compute_screener_metrics(
             "RSI (14)": rsi,
             "Trend (MA200)": trend,
             "Vol (전일대비)": vol_ratio,
-            "Action": action,
+            "PER": per_display if not is_etf else "—",
+            "NAV 괴리율(%)": nav_display if is_etf else "—",
+            "Entry Signal": entry_signal,
+            "Value Check": value_check,
+            "Risk Status": risk_status,
         })
     return rows
