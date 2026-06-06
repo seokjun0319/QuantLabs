@@ -27312,5 +27312,18 @@
       "returns": 0.0,
       "mdd": 0.0
     }
+  },
+  {
+    "timestamp": "2026-06-06T15:50:56Z",
+    "params": {
+      "ema_fast": 9,
+      "ema_slow": 21,
+      "rsi_period": 14,
+      "atr_trail_mult": 2.0
+    },
+    "result": {
+      "returns": 0.23511530008040005,
+      "mdd": 0.14743635481505493
+    }
   }
 ]
